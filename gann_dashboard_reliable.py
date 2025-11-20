@@ -434,9 +434,18 @@ with tab3:
                 fig.update_layout(template='plotly_dark', height=650)
                 st.plotly_chart(fig, use_container_width=True)
 
-                vol_fig = px.bar(plot_df, x='Date', y='Volume', title='Volume')
-                vol_fig.update_layout(template='plotly_dark', height=220)
-                st.plotly_chart(vol_fig, use_container_width=True)
+                # Volume chart with safe handling
+                if 'Volume' in plot_df.columns:
+                    vol_df = plot_df[['Date', 'Volume']].copy()
+                    vol_df = vol_df.dropna(subset=['Volume'])
+                    if not vol_df.empty and vol_df['Volume'].notna().any():
+                        vol_fig = px.bar(vol_df, x='Date', y='Volume', title='Volume')
+                        vol_fig.update_layout(template='plotly_dark', height=220)
+                        st.plotly_chart(vol_fig, use_container_width=True)
+                    else:
+                        st.info("No volume data available for this period.")
+                else:
+                    st.info("Volume data not available.")
 
 # GANN Tools
 with tab4:
