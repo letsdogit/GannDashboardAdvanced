@@ -1,4 +1,4 @@
-streamlit>=1.23.0
+streamlit
 pandas
 numpy
 yfinance
@@ -6,3 +6,4 @@ plotly
 fpdf
 openpyxl
 python-dateutil
+scikit-learn
