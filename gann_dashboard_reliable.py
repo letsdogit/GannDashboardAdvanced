@@ -31,7 +31,7 @@ body{background:linear-gradient(180deg,var(--bg),#020815); color:#eaf3ff;}
 """, unsafe_allow_html=True)
 
 st.markdown("<h2>📈 GANN Pro — Final Reliable Dashboard</h2>", unsafe_allow_html=True)
-st.markdown("<div class='small'>Recommended tickers: Nifty (^NSEI), Dow (DJI), Nasdaq (IXIC). Robust fallbacks & safety checks included.</div>", unsafe_allow_html=True)
+st.markdown("<div class='small'>Recommended tickers: Nifty (^NSEI), Dow (^DJI), Nasdaq (^IXIC). Robust fallbacks & safety checks included.</div>", unsafe_allow_html=True)
 st.write("")
 
 # ---------------------------
@@ -53,28 +53,67 @@ def try_run(func, fallback=None, *a, **kw):
         return fallback
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def yf_download_candidates(candidates, start, end, retries=1, pause=0.8):
+def yf_download_robust(ticker, start, end, max_retries=3):
     """
-    Try multiple ticker candidates in order. Return first successful DataFrame or empty df.
+    Robust Yahoo Finance download with proper error handling
     """
-    for t in candidates:
-        for attempt in range(retries+1):
-            try:
-                df = yf.download(t, start=start, end=end, progress=False, auto_adjust=False)
-                if df is not None and not df.empty:
-                    df = df.reset_index()
-                    df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
-                    for c in ['Open','High','Low','Close','Adj Close','Volume']:
-                        if c not in df.columns:
-                            df[c] = np.nan
-                    df['Return_Pct'] = df['Close'].pct_change()*100
-                    df['__SOURCE_TICKER'] = t
-                    return df
-                # small pause before retrying same ticker
-                time.sleep(pause)
-            except Exception:
-                time.sleep(pause)
+    for attempt in range(max_retries):
+        try:
+            # Download with progress=False to avoid issues
+            df = yf.download(ticker, start=start, end=end, progress=False)
+            
+            if df is None or df.empty:
+                st.warning(f"Attempt {attempt + 1}: No data returned for {ticker}")
+                time.sleep(1)
                 continue
+            
+            # Reset index to make Date a column
+            df = df.reset_index()
+            
+            # Ensure Date column exists and is datetime
+            if 'Date' not in df.columns:
+                st.error(f"Date column missing for {ticker}")
+                continue
+            
+            df['Date'] = pd.to_datetime(df['Date'])
+            if df['Date'].dt.tz is not None:
+                df['Date'] = df['Date'].dt.tz_localize(None)
+            
+            # Standardize column names (handle MultiIndex if present)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            
+            # Ensure all required columns exist
+            required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            for col in required_cols:
+                if col not in df.columns:
+                    # Try common variations
+                    for alt in [col.lower(), col.upper(), f'Adj {col}']:
+                        if alt in df.columns:
+                            df[col] = df[alt]
+                            break
+                    else:
+                        df[col] = np.nan
+            
+            # Add Adj Close if not present
+            if 'Adj Close' not in df.columns:
+                df['Adj Close'] = df['Close']
+            
+            # Calculate returns
+            df['Return_Pct'] = df['Close'].pct_change() * 100
+            
+            # Add source ticker
+            df['__SOURCE_TICKER'] = ticker
+            
+            st.success(f"✓ Successfully downloaded {len(df)} rows for {ticker}")
+            return df
+            
+        except Exception as e:
+            st.warning(f"Attempt {attempt + 1} failed for {ticker}: {str(e)}")
+            time.sleep(1)
+            continue
+    
+    st.error(f"Failed to download {ticker} after {max_retries} attempts")
     return pd.DataFrame()
 
 # ---------------------------
@@ -168,7 +207,7 @@ def detect_vol_spikes(df, mult=2.0):
     return d
 
 # ---------------------------
-# Safe comparison helpers (FIX FOR THE ERROR)
+# Safe comparison helpers
 # ---------------------------
 def safe_count_positive(series):
     """Safely count positive values, handling NaN"""
@@ -195,122 +234,140 @@ def safe_mean(series):
         return np.nan
 
 # ---------------------------
-# Sidebar controls (recommended tickers)
+# Sidebar controls
 # ---------------------------
 with st.sidebar:
     st.header("Settings — FINAL")
-    years = st.slider("GANN years (start,end)", 2023, 2035, (2023, 2025))
+    years = st.slider("GANN years (start,end)", 2020, 2030, (2023, 2025))
     years_list = list(range(years[0], years[1]+1))
 
-    st.markdown("### Markets (recommended)")
-    # Recommended primary tickers and fallbacks
-    recommended_map = {
-        "Nifty 50": ["^NSEI", "^NIFTY50", "^NSEI.NS", "NIFTY50.NS"],
-        "Dow Jones": ["DJI", "^DJI"],
-        "Nasdaq": ["IXIC", "^IXIC"]
+    st.markdown("### Markets")
+    ticker_options = {
+        "Nifty 50": "^NSEI",
+        "Dow Jones": "^DJI",
+        "Nasdaq": "^IXIC",
+        "S&P 500": "^GSPC",
+        "FTSE 100": "^FTSE",
+        "DAX": "^GDAXI",
+        "Nikkei 225": "^N225",
+        "Custom": "CUSTOM"
     }
-    markets = st.multiselect("Markets to include", options=list(recommended_map.keys()), default=list(recommended_map.keys()))
-    # build candidates dict to pass to downloader
-    market_candidates = {}
-    for m in markets:
-        # allow user override of primary ticker (optional)
-        user_val = st.text_input(f"Primary ticker for {m} (optional)", value=recommended_map[m][0])
-        # build candidates list with user choice first, then default fallbacks
-        cand = [user_val] + [c for c in recommended_map[m] if c != user_val]
-        # unique
-        seen=[]
-        cand_clean=[x for x in cand if not (x in seen or seen.append(x))]
-        market_candidates[m] = cand_clean
+    
+    selected_markets = st.multiselect(
+        "Select Markets", 
+        options=list(ticker_options.keys()), 
+        default=["Nifty 50", "Dow Jones", "Nasdaq"]
+    )
+    
+    # Allow custom tickers
+    market_tickers = {}
+    for market in selected_markets:
+        if market == "Custom":
+            custom_ticker = st.text_input("Enter custom ticker (e.g., AAPL, TSLA)", value="AAPL")
+            market_tickers[custom_ticker] = custom_ticker
+        else:
+            market_tickers[market] = ticker_options[market]
 
     st.markdown("### Date range")
     end_date = st.date_input("End date", value=date.today())
-    start_date = st.date_input("Start date", value=end_date - relativedelta(years=3))
+    start_date = st.date_input("Start date", value=end_date - relativedelta(years=2))
 
     st.markdown("### GANN Angles")
     all_angles = [30,45,60,72,90,120,135,150,180,210,225,240,252,270,288,300,315,330]
-    angles_sel = st.multiselect("Angles", all_angles, default=all_angles)
+    angles_sel = st.multiselect("Angles", all_angles, default=[30,45,60,90,120,150,180,210,240,270,300,330])
 
     st.markdown("### Pressure date methods")
-    pressure_methods = st.multiselect("Methods", ['simple','advanced','astro'], default=['simple','advanced','astro'])
+    pressure_methods = st.multiselect("Methods", ['simple','advanced','astro'], default=['simple'])
 
     st.markdown("### Detection & Export")
     move_thresholds = st.multiselect("Mark moves > (%)", [1,2,3,5], default=[1,2])
     vol_multiplier = st.slider("Volume spike multiplier", 1.5, 5.0, 2.0, 0.1)
     enable_excel = st.checkbox("Enable Excel export", value=True)
-    enable_pdf = st.checkbox("Enable PDF export", value=True)
+    enable_pdf = st.checkbox("Enable PDF export", value=False)
 
-    if st.button("Clear cache and refresh"):
+    if st.button("🔄 Clear cache and refresh"):
         st.cache_data.clear()
-        st.success("Cache cleared.")
+        st.success("Cache cleared!")
         st.rerun()
 
 # ---------------------------
-# Fetch data for each selected market (robust)
+# Fetch data for each selected market
 # ---------------------------
 st.markdown("---")
-st.subheader("Fetching market data (robust mode)")
+st.subheader("📊 Fetching Market Data")
 
 market_data = {}
-fetch_errors = {}
+fetch_status = {}
 
-for m, candidates in market_candidates.items():
-    st.info(f"Downloading {m} (candidates: {', '.join(candidates)})")
-    df = yf_download_candidates(candidates, start=start_date.strftime("%Y-%m-%d"), end=(end_date + timedelta(days=1)).strftime("%Y-%m-%d"))
-    if df is None or df.empty:
-        fetch_errors[m] = f"No data for candidates: {candidates}"
-        market_data[m] = pd.DataFrame()
-    else:
-        market_data[m] = df
+with st.spinner("Downloading market data..."):
+    for market_name, ticker in market_tickers.items():
+        with st.expander(f"Downloading {market_name} ({ticker})", expanded=False):
+            df = yf_download_robust(
+                ticker, 
+                start=start_date.strftime("%Y-%m-%d"), 
+                end=(end_date + timedelta(days=1)).strftime("%Y-%m-%d")
+            )
+            
+            if df is not None and not df.empty:
+                market_data[market_name] = df
+                fetch_status[market_name] = "✓ Success"
+            else:
+                market_data[market_name] = pd.DataFrame()
+                fetch_status[market_name] = "✗ Failed"
 
-if fetch_errors:
-    st.warning("Some markets had no data:")
-    for k,v in fetch_errors.items():
-        st.write(f" - {k}: {v}")
+# Show status summary
+status_df = pd.DataFrame([
+    {"Market": k, "Status": v, "Rows": len(market_data.get(k, pd.DataFrame()))}
+    for k, v in fetch_status.items()
+])
+st.dataframe(status_df, use_container_width=True)
 
-ok_markets = [k for k,v in market_data.items() if (v is not None and not v.empty)]
-st.success(f"Markets with data: {', '.join(ok_markets) if ok_markets else 'None'}")
+ok_markets = [k for k, v in market_data.items() if not v.empty]
+if not ok_markets:
+    st.error("⚠️ No market data available. Please check your internet connection or try different tickers.")
+    st.stop()
+
+st.success(f"✓ Successfully loaded {len(ok_markets)} market(s): {', '.join(ok_markets)}")
 
 # ---------------------------
 # Build GANN master
 # ---------------------------
-gann_master = build_gann_master(years_list, angles_sel, pressure_methods)
-st.info(f"GANN master generated — {len(gann_master)} entries (deduped).")
+with st.spinner("Generating GANN dates..."):
+    gann_master = build_gann_master(years_list, angles_sel, pressure_methods)
+    st.info(f"📅 Generated {len(gann_master)} GANN dates")
 
 # ---------------------------
-# Align GANN dates to primary market trading dates
+# Align GANN dates to primary market
 # ---------------------------
-primary_market = ok_markets[0] if ok_markets else None
-if primary_market:
-    primary_sel = st.selectbox("Primary market to align signals", ok_markets, index=0)
-    primary_market = primary_sel
-else:
-    primary_market = None
+primary_market = st.selectbox("Select primary market for analysis", ok_markets, index=0)
 
 signals_df = pd.DataFrame()
 if primary_market:
     dfp = market_data[primary_market]
     trading_dates = dfp['Date'].dt.date.tolist()
     rows=[]
-    for _, row in gann_master.iterrows():
-        gd = row['GANN_Date']
-        nd = find_nearest_trading_date(gd, trading_dates, lookback=7)
-        if nd is None:
-            continue
-        mr = dfp[dfp['Date'].dt.date == nd]
-        if mr.empty:
-            continue
-        last = mr.iloc[-1]
-        rows.append({
-            'GANN_Date': gd,
-            'GANN_Type': row.get('Type',''),
-            'Source': row.get('Source',''),
-            'Market_Date': nd,
-            'Close': last.get('Close', np.nan),
-            'Change_Pct': last.get('Return_Pct', np.nan)
-        })
-    signals_df = pd.DataFrame(rows).sort_values('GANN_Date').reset_index(drop=True)
+    
+    with st.spinner("Aligning GANN dates with trading data..."):
+        for _, row in gann_master.iterrows():
+            gd = row['GANN_Date']
+            nd = find_nearest_trading_date(gd, trading_dates, lookback=7)
+            if nd is None:
+                continue
+            mr = dfp[dfp['Date'].dt.date == nd]
+            if mr.empty:
+                continue
+            last = mr.iloc[-1]
+            rows.append({
+                'GANN_Date': gd,
+                'GANN_Type': row.get('Type',''),
+                'Source': row.get('Source',''),
+                'Market_Date': nd,
+                'Close': last.get('Close', np.nan),
+                'Change_Pct': last.get('Return_Pct', np.nan)
+            })
+        signals_df = pd.DataFrame(rows).sort_values('GANN_Date').reset_index(drop=True)
 
-# Safe classify move function
+# Classify moves
 def classify_move_safe(x, thresholds):
     try:
         if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
@@ -325,201 +382,321 @@ def classify_move_safe(x, thresholds):
 
 if not signals_df.empty:
     signals_df['MoveTag'] = signals_df['Change_Pct'].apply(lambda x: classify_move_safe(x, move_thresholds))
-else:
-    st.warning("No aligned GANN signals found for the chosen primary market and date range.")
 
 # ---------------------------
-# Tabs: Overview / Signals / Charts / Tools / Exports
+# Tabs
 # ---------------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Overview","GANN Signals","Charts","Gann Tools","Exports"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview","🎯 GANN Signals","📈 Charts","🔧 Tools","📁 Exports"])
 
 # Overview
 with tab1:
-    st.subheader("Overview")
+    st.subheader("Market Overview")
     if primary_market and not market_data[primary_market].empty:
         dfp = market_data[primary_market]
         last = dfp.iloc[-1]
-        c1,c2,c3,c4 = st.columns(4)
-        c1.metric("Latest Close", safe_fmt(last.get('Close', np.nan), "{:.2f}"), delta=safe_fmt(last.get('Return_Pct', np.nan), "{:.2f}%"))
-        c2.metric("30d Avg Vol", safe_fmt(dfp['Volume'].tail(30).mean(), "{:.0f}"))
-        c3.metric("52w High", safe_fmt(dfp['Close'].rolling(252,min_periods=1).max().iloc[-1], "{:.2f}"))
-        c4.metric("52w Low", safe_fmt(dfp['Close'].rolling(252,min_periods=1).min().iloc[-1], "{:.2f}"))
-    else:
-        st.warning("No primary market data for overview.")
-
-    st.markdown("### Market snapshot")
-    snapshot_rows=[]
-    for m,df in market_data.items():
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Latest Close", safe_fmt(last.get('Close', np.nan), "{:.2f}"), 
+                   delta=safe_fmt(last.get('Return_Pct', np.nan), "{:.2f}%"))
+        col2.metric("30d Avg Vol", safe_fmt(dfp['Volume'].tail(30).mean(), "{:,.0f}"))
+        col3.metric("52w High", safe_fmt(dfp['Close'].rolling(252, min_periods=1).max().iloc[-1], "{:.2f}"))
+        col4.metric("52w Low", safe_fmt(dfp['Close'].rolling(252, min_periods=1).min().iloc[-1], "{:.2f}"))
+        
+        # Price chart
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=dfp['Date'], 
+            y=dfp['Close'],
+            mode='lines',
+            name='Close Price',
+            line=dict(color='#7dd3fc', width=2)
+        ))
+        fig.update_layout(
+            title=f"{primary_market} Price History",
+            template='plotly_dark',
+            height=400,
+            xaxis_title="Date",
+            yaxis_title="Price"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # All markets snapshot
+    st.markdown("### All Markets Snapshot")
+    snapshot_rows = []
+    for m, df in market_data.items():
         if df is None or df.empty:
-            snapshot_rows.append({'Market':m, 'Latest Close':'N/A', '1d %':'N/A', 'Status':'No Data'})
+            snapshot_rows.append({
+                'Market': m, 
+                'Latest Close': 'N/A', 
+                '1d Change %': 'N/A', 
+                'Status': 'No Data'
+            })
         else:
             last = df.iloc[-1]
-            snapshot_rows.append({'Market':m, 'Latest Close': safe_fmt(last.get('Close', np.nan)), '1d %': safe_fmt(last.get('Return_Pct', np.nan), "{:.2f}%"), 'Status':'OK'})
+            snapshot_rows.append({
+                'Market': m, 
+                'Latest Close': safe_fmt(last.get('Close', np.nan)), 
+                '1d Change %': safe_fmt(last.get('Return_Pct', np.nan), "{:.2f}%"), 
+                'Status': '✓ Active'
+            })
     st.dataframe(pd.DataFrame(snapshot_rows), use_container_width=True)
 
 # GANN Signals
 with tab2:
-    st.subheader("GANN Signals")
+    st.subheader("GANN Signals Analysis")
+    
     if signals_df.empty:
-        st.info("No GANN signals aligned. Check date range or primary market.")
+        st.warning("⚠️ No GANN signals aligned. Check date range or primary market.")
     else:
-        f_from = st.date_input("From", value=signals_df['GANN_Date'].min())
-        f_to = st.date_input("To", value=signals_df['GANN_Date'].max())
+        col1, col2 = st.columns(2)
+        with col1:
+            f_from = st.date_input("From Date", value=signals_df['GANN_Date'].min(), key="sig_from")
+        with col2:
+            f_to = st.date_input("To Date", value=signals_df['GANN_Date'].max(), key="sig_to")
+        
         only_sig = st.checkbox("Show only significant moves", value=False)
-        df_view = signals_df[(signals_df['GANN_Date'] >= f_from) & (signals_df['GANN_Date'] <= f_to)]
+        
+        df_view = signals_df[
+            (signals_df['GANN_Date'] >= f_from) & 
+            (signals_df['GANN_Date'] <= f_to)
+        ].copy()
+        
         if only_sig:
             df_view = df_view[df_view['MoveTag'] != ""]
-        st.dataframe(df_view, use_container_width=True, height=420)
+        
+        # Display dataframe
+        st.dataframe(
+            df_view.style.background_gradient(
+                subset=['Change_Pct'], 
+                cmap='RdYlGn',
+                vmin=-5,
+                vmax=5
+            ),
+            use_container_width=True,
+            height=400
+        )
+        
+        # Statistics
         if not df_view.empty:
-            # FIXED: Using safe comparison functions
+            col1, col2, col3, col4 = st.columns(4)
+            
             avg_change = safe_mean(df_view['Change_Pct'])
             wins = safe_count_positive(df_view['Change_Pct'])
             losses = safe_count_negative(df_view['Change_Pct'])
+            win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
             
-            st.write("Average move:", safe_fmt(avg_change, "{:.2f}%"))
-            st.write("Wins:", wins, "Losses:", losses)
+            col1.metric("Average Move", safe_fmt(avg_change, "{:.2f}%"))
+            col2.metric("Wins", wins)
+            col3.metric("Losses", losses)
+            col4.metric("Win Rate", f"{win_rate:.1f}%")
 
 # Charts
 with tab3:
-    st.subheader("Candlestick Charts & GANN Markers")
+    st.subheader("Advanced Charts")
+    
     if not ok_markets:
         st.warning("No market data available for charts.")
     else:
-        chart_market = st.selectbox("Chart market", ok_markets, index=0)
+        chart_market = st.selectbox("Select market for charting", ok_markets, index=0, key="chart_market")
         dfc = market_data.get(chart_market, pd.DataFrame())
+        
         if dfc.empty:
             st.warning("Selected market has no data.")
         else:
-            ch_from = st.date_input("Chart from", value=end_date - relativedelta(years=1), key="chart_from")
-            ch_to = st.date_input("Chart to", value=end_date, key="chart_to")
-            show20 = st.checkbox("SMA20", value=True)
-            show50 = st.checkbox("SMA50", value=True)
-            show200 = st.checkbox("SMA200", value=False)
-            show_gann = st.checkbox("Show GANN markers", value=True)
-            show_fan = st.checkbox("Show Gann fan (approx)", value=False)
-
-            plot_df = dfc[(dfc['Date'].dt.date >= ch_from) & (dfc['Date'].dt.date <= ch_to)].copy()
+            col1, col2 = st.columns(2)
+            with col1:
+                ch_from = st.date_input("Chart From", value=end_date - relativedelta(months=6), key="ch_from")
+            with col2:
+                ch_to = st.date_input("Chart To", value=end_date, key="ch_to")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            show20 = col1.checkbox("SMA 20", value=True)
+            show50 = col2.checkbox("SMA 50", value=True)
+            show200 = col3.checkbox("SMA 200", value=False)
+            show_gann = col4.checkbox("GANN Markers", value=True)
+            
+            plot_df = dfc[
+                (dfc['Date'].dt.date >= ch_from) & 
+                (dfc['Date'].dt.date <= ch_to)
+            ].copy()
+            
             if plot_df.empty:
-                st.warning("No data in this chart range.")
+                st.warning("No data in selected range.")
             else:
-                if show20: plot_df['SMA20'] = plot_df['Close'].rolling(20, min_periods=1).mean()
-                if show50: plot_df['SMA50'] = plot_df['Close'].rolling(50, min_periods=1).mean()
-                if show200: plot_df['SMA200'] = plot_df['Close'].rolling(200, min_periods=1).mean()
-
+                # Calculate SMAs
+                if show20:
+                    plot_df['SMA20'] = plot_df['Close'].rolling(20, min_periods=1).mean()
+                if show50:
+                    plot_df['SMA50'] = plot_df['Close'].rolling(50, min_periods=1).mean()
+                if show200:
+                    plot_df['SMA200'] = plot_df['Close'].rolling(200, min_periods=1).mean()
+                
+                # Create candlestick chart
                 fig = go.Figure()
-                fig.add_trace(go.Candlestick(x=plot_df['Date'], open=plot_df['Open'], high=plot_df['High'], low=plot_df['Low'], close=plot_df['Close'], name='Candles'))
-                if show20: fig.add_trace(go.Scatter(x=plot_df['Date'], y=plot_df['SMA20'], name='SMA20', line=dict(width=1.5, dash='dash')))
-                if show50: fig.add_trace(go.Scatter(x=plot_df['Date'], y=plot_df['SMA50'], name='SMA50', line=dict(width=1.5, dash='dot')))
-                if show200: fig.add_trace(go.Scatter(x=plot_df['Date'], y=plot_df['SMA200'], name='SMA200', line=dict(width=1.5)))
-
-                if show_gann:
-                    tset = set(plot_df['Date'].dt.date.tolist())
-                    for gd in gann_master['GANN_Date']:
-                        if gd >= ch_from and gd <= ch_to:
-                            nd = find_nearest_trading_date(gd, tset, lookback=5)
-                            if nd:
-                                yv = plot_df.loc[plot_df['Date'].dt.date == nd, 'Close']
-                                if not yv.empty:
-                                    fig.add_trace(go.Scatter(x=[pd.to_datetime(nd)], y=[float(yv.iloc[0])], mode='markers+text', marker=dict(size=9, symbol='diamond'), text=[f"GANN {gd}"], textposition='top center', showlegend=False))
-
-                if show_fan:
-                    origin_date = plot_df['Date'].iloc[-1]
-                    origin_price = plot_df['Close'].iloc[-1]
-                    xvals = plot_df['Date']
-                    slopes = [1,0.5,0.25,2]
-                    for s in slopes:
-                        yvals = [origin_price + (((x - origin_date).days) * s * 0.1) for x in xvals]
-                        fig.add_trace(go.Scatter(x=xvals, y=yvals, mode='lines', line=dict(width=1, dash='dash'), showlegend=False))
-
-                fig.update_layout(template='plotly_dark', height=650)
+                
+                fig.add_trace(go.Candlestick(
+                    x=plot_df['Date'],
+                    open=plot_df['Open'],
+                    high=plot_df['High'],
+                    low=plot_df['Low'],
+                    close=plot_df['Close'],
+                    name='Price'
+                ))
+                
+                if show20:
+                    fig.add_trace(go.Scatter(
+                        x=plot_df['Date'], 
+                        y=plot_df['SMA20'], 
+                        name='SMA 20',
+                        line=dict(color='orange', width=1.5, dash='dash')
+                    ))
+                
+                if show50:
+                    fig.add_trace(go.Scatter(
+                        x=plot_df['Date'], 
+                        y=plot_df['SMA50'], 
+                        name='SMA 50',
+                        line=dict(color='blue', width=1.5, dash='dot')
+                    ))
+                
+                if show200:
+                    fig.add_trace(go.Scatter(
+                        x=plot_df['Date'], 
+                        y=plot_df['SMA200'], 
+                        name='SMA 200',
+                        line=dict(color='red', width=2)
+                    ))
+                
+                # Add GANN markers
+                if show_gann and not signals_df.empty:
+                    gann_in_range = signals_df[
+                        (signals_df['GANN_Date'] >= ch_from) & 
+                        (signals_df['GANN_Date'] <= ch_to)
+                    ]
+                    
+                    for _, row in gann_in_range.iterrows():
+                        market_date = row['Market_Date']
+                        close_price = row['Close']
+                        
+                        if not math.isnan(close_price):
+                            fig.add_trace(go.Scatter(
+                                x=[pd.to_datetime(market_date)],
+                                y=[close_price],
+                                mode='markers+text',
+                                marker=dict(size=10, symbol='diamond', color='yellow'),
+                                text=[f"GANN"],
+                                textposition='top center',
+                                showlegend=False,
+                                hovertext=f"{row['GANN_Type']}<br>{row['GANN_Date']}"
+                            ))
+                
+                fig.update_layout(
+                    title=f"{chart_market} - Candlestick Chart with GANN Dates",
+                    template='plotly_dark',
+                    height=600,
+                    xaxis_title="Date",
+                    yaxis_title="Price",
+                    xaxis_rangeslider_visible=False
+                )
+                
                 st.plotly_chart(fig, use_container_width=True)
-
-                # Volume chart with safe handling
+                
+                # Volume chart
+                st.markdown("### Volume Analysis")
                 if 'Volume' in plot_df.columns:
-                    vol_df = plot_df[['Date', 'Volume']].copy()
-                    vol_df = vol_df.dropna(subset=['Volume'])
-                    if not vol_df.empty and vol_df['Volume'].notna().any():
-                        vol_fig = px.bar(vol_df, x='Date', y='Volume', title='Volume')
-                        vol_fig.update_layout(template='plotly_dark', height=220)
+                    vol_data = plot_df[['Date', 'Volume']].copy()
+                    vol_data = vol_data[vol_data['Volume'].notna()]
+                    
+                    if not vol_data.empty:
+                        vol_fig = go.Figure()
+                        vol_fig.add_trace(go.Bar(
+                            x=vol_data['Date'],
+                            y=vol_data['Volume'],
+                            name='Volume',
+                            marker_color='rgba(125, 211, 252, 0.6)'
+                        ))
+                        
+                        vol_fig.update_layout(
+                            title="Trading Volume",
+                            template='plotly_dark',
+                            height=250,
+                            xaxis_title="Date",
+                            yaxis_title="Volume"
+                        )
+                        
                         st.plotly_chart(vol_fig, use_container_width=True)
                     else:
                         st.info("No volume data available for this period.")
                 else:
-                    st.info("Volume data not available.")
+                    st.info("Volume data not available for this market.")
 
-# GANN Tools
+# Tools
 with tab4:
-    st.subheader("Gann Tools")
+    st.subheader("GANN Analysis Tools")
+    
     if not ok_markets:
-        st.warning("No data for Gann tools.")
+        st.warning("No data available for tools.")
     else:
-        tool_market = st.selectbox("Market for tools", ok_markets)
+        tool_market = st.selectbox("Select market", ok_markets, key="tool_market")
         dfm = market_data.get(tool_market, pd.DataFrame())
+        
         if dfm.empty:
-            st.warning("No data.")
+            st.warning("No data available.")
         else:
             last_price = dfm['Close'].iloc[-1]
-            st.markdown(f"**Last Close ({tool_market})**: {safe_fmt(last_price,'{:.2f}')}")
-            levels = square_of_9(last_price, steps=12)
-            st.markdown("**Square-of-9 levels (approx)**")
-            st.dataframe(pd.DataFrame({'Level':levels}))
-            S,R = support_resistance(dfm)
-            st.write("Support (20d):", safe_fmt(S))
-            st.write("Resistance (20d):", safe_fmt(R))
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("### Square of 9 Levels")
+                st.markdown(f"**Last Close**: {safe_fmt(last_price, '{:.2f}')}")
+                
+                levels = square_of_9(last_price, steps=12)
+                levels_df = pd.DataFrame({
+                    'Level': [safe_fmt(l, '{:.2f}') for l in levels],
+                    'Distance %': [safe_fmt((l - last_price) / last_price * 100, '{:.2f}%') for l in levels]
+                })
+                st.dataframe(levels_df, use_container_width=True, height=300)
+            
+            with col2:
+                st.markdown("### Support & Resistance")
+                S, R = support_resistance(dfm)
+                
+                st.metric("Support (20-day)", safe_fmt(S, '{:.2f}'))
+                st.metric("Resistance (20-day)", safe_fmt(R, '{:.2f}'))
+                st.metric("Current Price", safe_fmt(last_price, '{:.2f}'))
+                
+                # Distance from S/R
+                if not math.isnan(S):
+                    dist_s = ((last_price - S) / S) * 100
+                    st.write(f"Distance from Support: {safe_fmt(dist_s, '{:.2f}%')}")
+                
+                if not math.isnan(R):
+                    dist_r = ((R - last_price) / last_price) * 100
+                    st.write(f"Distance to Resistance: {safe_fmt(dist_r, '{:.2f}%')}")
+            
+            # Volume spikes
+            st.markdown("### Volume Spike Analysis")
             vdf = detect_vol_spikes(dfm, vol_multiplier)
-            spikes = vdf[vdf['VolSpike']].tail(10)
-            st.markdown(f"Recent volume spikes (last 10): {len(spikes)}")
-            if not spikes.empty:
-                st.dataframe(spikes[['Date','Close','Volume']].tail(10))
+            
+            if 'VolSpike' in vdf.columns:
+                spikes = vdf[vdf['VolSpike'] == True].tail(20)
+                
+                if not spikes.empty:
+                    st.write(f"Found {len(spikes)} volume spikes in recent history")
+                    spike_display = spikes[['Date', 'Close', 'Volume', 'Return_Pct']].copy()
+                    spike_display['Date'] = spike_display['Date'].dt.strftime('%Y-%m-%d')
+                    st.dataframe(spike_display, use_container_width=True)
+                else:
+                    st.info("No recent volume spikes detected.")
+            else:
+                st.info("Volume spike analysis not available.")
 
 # Exports
 with tab5:
-    st.subheader("Exports & Report")
+    st.subheader("Export Data & Reports")
+    
     if not ok_markets:
-        st.warning("No market data for exports.")
+        st.warning("No market data available for export.")
     else:
-        export_market = st.selectbox("Export market", ok_markets)
-        edf = market_data.get(export_market, pd.DataFrame())
-        if edf.empty:
-            st.warning("Selected market has no data.")
-        else:
-            # Excel
-            if enable_excel:
-                if st.button("Prepare Excel (data + signals)"):
-                    buf = io.BytesIO()
-                    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-                        edf.to_excel(writer, sheet_name='market_data', index=False)
-                        if not signals_df.empty:
-                            signals_df.to_excel(writer, sheet_name='gann_signals', index=False)
-                    buf.seek(0)
-                    b64 = base64.b64encode(buf.read()).decode()
-                    st.markdown(f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="gann_export_{export_market}.xlsx">📥 Download Excel</a>', unsafe_allow_html=True)
-
-            # PDF
-            if enable_pdf:
-                if st.button("Generate PDF Summary"):
-                    pdf = FPDF()
-                    pdf.add_page()
-                    pdf.set_font("Arial", size=14)
-                    pdf.cell(0,8,f"GANN Report - {export_market}", ln=True, align='C')
-                    pdf.ln(4)
-                    pdf.set_font("Arial", size=10)
-                    last = edf.iloc[-1]
-                    pdf.cell(0,6,f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
-                    pdf.cell(0,6,f"Latest Close: {safe_fmt(last.get('Close',np.nan),'%0.2f')}", ln=True)
-                    pdf.cell(0,6,f"1d %: {safe_fmt(last.get('Return_Pct',np.nan),'{:.2f}%')}", ln=True)
-                    pdf.ln(6)
-                    if not signals_df.empty:
-                        pdf.set_font("Arial", size=9)
-                        pdf.cell(0,6,"Recent GANN Signals (sample):", ln=True)
-                        sample = signals_df.tail(10)
-                        for _, r in sample.iterrows():
-                            pdf.cell(0,6, f"{r['GANN_Date']} | {r['GANN_Type'][:12]:12} | Close {safe_fmt(r.get('Close',np.nan))} | {safe_fmt(r.get('Change_Pct',np.nan),'{:.2f}%')}", ln=True)
-                    else:
-                        pdf.cell(0,6, "No GANN signals to include.", ln=True)
-                    pdf_bytes = pdf.output(dest='S').encode('latin-1')
-                    b64 = base64.b64encode(pdf_bytes).decode()
-                    st.markdown(f'<a href="data:application/pdf;base64,{b64}" download="gann_report_{export_market}.pdf">📄 Download PDF</a>', unsafe_allow_html=True)
-
-st.markdown("---")
-st.markdown("<div class='small'>© GANN Pro — Final Reliable • Use recommended tickers; verify ticker variations for your region if needed.</div>", unsafe_allow_html=True)
+        export_market = st.selectbox("Select market to export", ok_markets, key="export_market")
