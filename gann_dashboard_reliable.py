@@ -27,6 +27,22 @@ body{background:linear-gradient(180deg,var(--bg),#020815); color:#eaf3ff;}
 .stButton>button{background:linear-gradient(90deg,var(--accent),var(--accent2)); border:none; color:#012; font-weight:700;}
 .card{background:rgba(255,255,255,0.03); padding:12px; border-radius:10px; box-shadow:0 6px 18px rgba(0,0,0,0.6);}
 .small{color:var(--muted); font-size:13px;}
+.download-btn {
+    display: inline-block;
+    padding: 10px 20px;
+    background: linear-gradient(90deg, #7dd3fc, #a78bfa);
+    color: #012;
+    text-decoration: none;
+    border-radius: 8px;
+    font-weight: 700;
+    text-align: center;
+    margin: 10px 0;
+    transition: all 0.3s ease;
+}
+.download-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(125, 211, 252, 0.4);
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -59,7 +75,6 @@ def yf_download_robust(ticker, start, end, max_retries=3):
     """
     for attempt in range(max_retries):
         try:
-            # Download with progress=False to avoid issues
             df = yf.download(ticker, start=start, end=end, progress=False)
             
             if df is None or df.empty:
@@ -67,10 +82,8 @@ def yf_download_robust(ticker, start, end, max_retries=3):
                 time.sleep(1)
                 continue
             
-            # Reset index to make Date a column
             df = df.reset_index()
             
-            # Ensure Date column exists and is datetime
             if 'Date' not in df.columns:
                 st.error(f"Date column missing for {ticker}")
                 continue
@@ -79,15 +92,12 @@ def yf_download_robust(ticker, start, end, max_retries=3):
             if df['Date'].dt.tz is not None:
                 df['Date'] = df['Date'].dt.tz_localize(None)
             
-            # Standardize column names (handle MultiIndex if present)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             
-            # Ensure all required columns exist
             required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
             for col in required_cols:
                 if col not in df.columns:
-                    # Try common variations
                     for alt in [col.lower(), col.upper(), f'Adj {col}']:
                         if alt in df.columns:
                             df[col] = df[alt]
@@ -95,14 +105,10 @@ def yf_download_robust(ticker, start, end, max_retries=3):
                     else:
                         df[col] = np.nan
             
-            # Add Adj Close if not present
             if 'Adj Close' not in df.columns:
                 df['Adj Close'] = df['Close']
             
-            # Calculate returns
             df['Return_Pct'] = df['Close'].pct_change() * 100
-            
-            # Add source ticker
             df['__SOURCE_TICKER'] = ticker
             
             st.success(f"✓ Successfully downloaded {len(df)} rows for {ticker}")
@@ -210,21 +216,18 @@ def detect_vol_spikes(df, mult=2.0):
 # Safe comparison helpers
 # ---------------------------
 def safe_count_positive(series):
-    """Safely count positive values, handling NaN"""
     try:
         return int(series.dropna().gt(0).sum())
     except Exception:
         return 0
 
 def safe_count_negative(series):
-    """Safely count negative values, handling NaN"""
     try:
         return int(series.dropna().lt(0).sum())
     except Exception:
         return 0
 
 def safe_mean(series):
-    """Safely calculate mean, handling NaN"""
     try:
         clean = series.dropna()
         if len(clean) > 0:
@@ -259,7 +262,6 @@ with st.sidebar:
         default=["Nifty 50", "Dow Jones", "Nasdaq"]
     )
     
-    # Allow custom tickers
     market_tickers = {}
     for market in selected_markets:
         if market == "Custom":
@@ -315,7 +317,6 @@ with st.spinner("Downloading market data..."):
                 market_data[market_name] = pd.DataFrame()
                 fetch_status[market_name] = "✗ Failed"
 
-# Show status summary
 status_df = pd.DataFrame([
     {"Market": k, "Status": v, "Rows": len(market_data.get(k, pd.DataFrame()))}
     for k, v in fetch_status.items()
@@ -367,7 +368,6 @@ if primary_market:
             })
         signals_df = pd.DataFrame(rows).sort_values('GANN_Date').reset_index(drop=True)
 
-# Classify moves
 def classify_move_safe(x, thresholds):
     try:
         if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
@@ -402,7 +402,6 @@ with tab1:
         col3.metric("52w High", safe_fmt(dfp['Close'].rolling(252, min_periods=1).max().iloc[-1], "{:.2f}"))
         col4.metric("52w Low", safe_fmt(dfp['Close'].rolling(252, min_periods=1).min().iloc[-1], "{:.2f}"))
         
-        # Price chart
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=dfp['Date'], 
@@ -420,7 +419,6 @@ with tab1:
         )
         st.plotly_chart(fig, use_container_width=True)
     
-    # All markets snapshot
     st.markdown("### All Markets Snapshot")
     snapshot_rows = []
     for m, df in market_data.items():
@@ -464,7 +462,6 @@ with tab2:
         if only_sig:
             df_view = df_view[df_view['MoveTag'] != ""]
         
-        # Display dataframe
         st.dataframe(
             df_view.style.background_gradient(
                 subset=['Change_Pct'], 
@@ -476,7 +473,6 @@ with tab2:
             height=400
         )
         
-        # Statistics
         if not df_view.empty:
             col1, col2, col3, col4 = st.columns(4)
             
@@ -523,7 +519,6 @@ with tab3:
             if plot_df.empty:
                 st.warning("No data in selected range.")
             else:
-                # Calculate SMAs
                 if show20:
                     plot_df['SMA20'] = plot_df['Close'].rolling(20, min_periods=1).mean()
                 if show50:
@@ -531,7 +526,6 @@ with tab3:
                 if show200:
                     plot_df['SMA200'] = plot_df['Close'].rolling(200, min_periods=1).mean()
                 
-                # Create candlestick chart
                 fig = go.Figure()
                 
                 fig.add_trace(go.Candlestick(
@@ -567,7 +561,6 @@ with tab3:
                         line=dict(color='red', width=2)
                     ))
                 
-                # Add GANN markers
                 if show_gann and not signals_df.empty:
                     gann_in_range = signals_df[
                         (signals_df['GANN_Date'] >= ch_from) & 
@@ -601,7 +594,6 @@ with tab3:
                 
                 st.plotly_chart(fig, use_container_width=True)
                 
-                # Volume chart
                 st.markdown("### Volume Analysis")
                 if 'Volume' in plot_df.columns:
                     vol_data = plot_df[['Date', 'Volume']].copy()
@@ -666,7 +658,6 @@ with tab4:
                 st.metric("Resistance (20-day)", safe_fmt(R, '{:.2f}'))
                 st.metric("Current Price", safe_fmt(last_price, '{:.2f}'))
                 
-                # Distance from S/R
                 if not math.isnan(S):
                     dist_s = ((last_price - S) / S) * 100
                     st.write(f"Distance from Support: {safe_fmt(dist_s, '{:.2f}%')}")
@@ -675,7 +666,6 @@ with tab4:
                     dist_r = ((R - last_price) / last_price) * 100
                     st.write(f"Distance to Resistance: {safe_fmt(dist_r, '{:.2f}%')}")
             
-            # Volume spikes
             st.markdown("### Volume Spike Analysis")
             vdf = detect_vol_spikes(dfm, vol_multiplier)
             
@@ -700,3 +690,140 @@ with tab5:
         st.warning("No market data available for export.")
     else:
         export_market = st.selectbox("Select market to export", ok_markets, key="export_market")
+        edf = market_data.get(export_market, pd.DataFrame())
+        
+        if edf.empty:
+            st.warning("Selected market has no data.")
+        else:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("### 📊 Excel Export")
+                if enable_excel:
+                    if st.button("📥 Generate Excel Report", key="excel_btn"):
+                        try:
+                            buf = io.BytesIO()
+                            with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+                                edf.to_excel(writer, sheet_name='Market_Data', index=False)
+                                
+                                if not signals_df.empty:
+                                    signals_df.to_excel(writer, sheet_name='GANN_Signals', index=False)
+                                
+                                summary_data = pd.DataFrame({
+                                    'Metric': ['Market', 'Latest Close', '1d Change %', 'Data Points', 'Date Range'],
+                                    'Value': [
+                                        export_market,
+                                        safe_fmt(edf['Close'].iloc[-1]),
+                                        safe_fmt(edf['Return_Pct'].iloc[-1], '{:.2f}%'),
+                                        len(edf),
+                                        f"{edf['Date'].min().strftime('%Y-%m-%d')} to {edf['Date'].max().strftime('%Y-%m-%d')}"
+                                    ]
+                                })
+                                summary_data.to_excel(writer, sheet_name='Summary', index=False)
+                            
+                            buf.seek(0)
+                            b64 = base64.b64encode(buf.read()).decode()
+                            
+                            download_link = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="GANN_Export_{export_market}_{datetime.now().strftime("%Y%m%d")}.xlsx" class="download-btn">📥 Download Excel File</a>'
+                            st.markdown(download_link, unsafe_allow_html=True)
+                            st.success("✓ Excel file generated successfully!")
+                            
+                        except Exception as e:
+                            st.error(f"Error generating Excel: {str(e)}")
+                else:
+                    st.info("Excel export is disabled. Enable it in the sidebar settings.")
+            
+            with col2:
+                st.markdown("### 📄 PDF Report")
+                if enable_pdf:
+                    if st.button("📥 Generate PDF Report", key="pdf_btn"):
+                        try:
+                            pdf = FPDF()
+                            pdf.add_page()
+                            pdf.set_font("Arial", 'B', size=16)
+                            pdf.cell(0, 10, f"GANN Analysis Report", ln=True, align='C')
+                            
+                            pdf.set_font("Arial", 'B', size=12)
+                            pdf.ln(5)
+                            pdf.cell(0, 8, f"Market: {export_market}", ln=True)
+                            
+                            pdf.set_font("Arial", size=10)
+                            pdf.cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
+                            pdf.ln(3)
+                            
+                            last = edf.iloc[-1]
+                            pdf.set_font("Arial", 'B', size=11)
+                            pdf.cell(0, 7, "Market Statistics", ln=True)
+                            pdf.set_font("Arial", size=10)
+                            pdf.cell(0, 6, f"Latest Close: {safe_fmt(last.get('Close', np.nan), '{:.2f}')}", ln=True)
+                            pdf.cell(0, 6, f"1-Day Change: {safe_fmt(last.get('Return_Pct', np.nan), '{:.2f}%')}", ln=True)
+                            pdf.cell(0, 6, f"Data Points: {len(edf)}", ln=True)
+                            pdf.cell(0, 6, f"Date Range: {edf['Date'].min().strftime('%Y-%m-%d')} to {edf['Date'].max().strftime('%Y-%m-%d')}", ln=True)
+                            pdf.ln(5)
+                            
+                            if not signals_df.empty:
+                                pdf.set_font("Arial", 'B', size=11)
+                                pdf.cell(0, 7, "Recent GANN Signals", ln=True)
+                                pdf.set_font("Arial", size=9)
+                                
+                                sample_signals = signals_df.tail(15)
+                                for _, r in sample_signals.iterrows():
+                                    gann_type = str(r.get('GANN_Type', ''))[:20]
+                                    close_val = safe_fmt(r.get('Close', np.nan), '{:.2f}')
+                                    change_val = safe_fmt(r.get('Change_Pct', np.nan), '{:.2f}%')
+                                    
+                                    line = f"{r['GANN_Date']} | {gann_type:20} | Close: {close_val:10} | Change: {change_val}"
+                                    pdf.cell(0, 5, line, ln=True)
+                            else:
+                                pdf.set_font("Arial", size=10)
+                                pdf.cell(0, 6, "No GANN signals available.", ln=True)
+                            
+                            pdf.ln(5)
+                            pdf.set_font("Arial", 'I', size=8)
+                            pdf.cell(0, 5, "This report is for informational purposes only and does not constitute financial advice.", ln=True)
+                            
+                            pdf_bytes = pdf.output(dest='S').encode('latin-1')
+                            b64 = base64.b64encode(pdf_bytes).decode()
+                            
+                            download_link = f'<a href="data:application/pdf;base64,{b64}" download="GANN_Report_{export_market}_{datetime.now().strftime("%Y%m%d")}.pdf" class="download-btn">📄 Download PDF Report</a>'
+                            st.markdown(download_link, unsafe_allow_html=True)
+                            st.success("✓ PDF report generated successfully!")
+                            
+                        except Exception as e:
+                            st.error(f"Error generating PDF: {str(e)}")
+                else:
+                    st.info("PDF export is disabled. Enable it in the sidebar settings.")
+            
+            st.markdown("---")
+            st.markdown("### 📋 Data Preview")
+            
+            tab_preview1, tab_preview2 = st.tabs(["Market Data", "GANN Signals"])
+            
+            with tab_preview1:
+                st.dataframe(
+                    edf.tail(50)[['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Return_Pct']],
+                    use_container_width=True,
+                    height=300
+                )
+            
+            with tab_preview2:
+                if not signals_df.empty:
+                    st.dataframe(
+                        signals_df.tail(50),
+                        use_container_width=True,
+                        height=300
+                    )
+                else:
+                    st.info("No GANN signals available.")
+
+# ---------------------------
+# Footer
+# ---------------------------
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: var(--muted); font-size: 12px; padding: 20px 0;'>
+    <p><strong>© 2025 GANN Pro Dashboard</strong> • Advanced Technical Analysis Tool</p>
+    <p>⚠️ Disclaimer: This tool is for educational and informational purposes only. Not financial advice.</p>
+    <p>Built with Streamlit • Data from Yahoo Finance</p>
+</div>
+""", unsafe_allow_html=True)
