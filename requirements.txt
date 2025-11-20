@@ -1,0 +1,8 @@
+streamlit>=1.23.0
+pandas
+numpy
+yfinance
+plotly
+fpdf
+openpyxl
+python-dateutil
